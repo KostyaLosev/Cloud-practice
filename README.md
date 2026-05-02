@@ -1,6 +1,6 @@
-# Azure Practice 2: Local Apps Connected to Azure SQL
+# Azure Practice 3: Local Apps Connected to Azure SQL and Service Bus Queue
 
-This repository contains a Python implementation of the **Online Science Tutoring System** for the assignment **"Local apps with API to connect to DB"**.
+This repository contains a Python implementation of the **Online Science Tutoring System** for the assignment **"Local apps with API to connect to DB"**, extended with Azure Service Bus communication between two local apps.
 
 The project consists of three local FastAPI services:
 
@@ -8,7 +8,7 @@ The project consists of three local FastAPI services:
 - `tutor_service`
 - `feedback_service`
 
-Each service runs locally, but reads data from a real **Azure SQL Database**.
+Each service runs locally, reads data from a real **Azure SQL Database**, and two of the apps now communicate through an **Azure Service Bus queue**.
 
 ## Project Scope
 
@@ -17,6 +17,12 @@ The system is split into three business domains:
 - `SessionService` manages students and tutoring sessions
 - `TutorService` manages tutors, subjects, and availability
 - `FeedbackService` manages feedback, processed feedback records, and feedback event logs
+
+## Service Bus Flow
+
+- `SessionService` publishes a `feedback.requested` message when a completed tutoring session is explicitly triggered through an API call
+- `FeedbackService` runs a background polling worker that reads queue messages at a configurable interval
+- After reading a message, `FeedbackService` writes a record to `feedback_event_log` and marks the session in `processed_session_feedback`
 
 The database is organized with a separate schema for each service:
 
@@ -89,6 +95,10 @@ DB_DATABASE=your_database_name
 DB_USERNAME=your_username
 DB_PASSWORD=your_password
 
+SERVICE_BUS_SEND_CONNECTION_STRING=Endpoint=sb://your-namespace.servicebus.windows.net/;SharedAccessKeyName=send;SharedAccessKey=your-send-key;EntityPath=your-queue-name
+SERVICE_BUS_LISTEN_CONNECTION_STRING=Endpoint=sb://your-namespace.servicebus.windows.net/;SharedAccessKeyName=listen;SharedAccessKey=your-listen-key;EntityPath=your-queue-name
+SERVICE_BUS_POLL_INTERVAL_SECONDS=15
+
 ODBC_DRIVER=ODBC Driver 18 for SQL Server
 DB_PORT=1433
 DB_ENCRYPT=yes
@@ -101,6 +111,7 @@ Notes:
 - The app supports both `DB_*` variables and a full `AZURE_SQL_CONNECTION_STRING`
 - The database layer automatically tries to use an available SQL Server ODBC driver
 - On the current machine, the project successfully worked with the installed SQL Server ODBC driver
+- The Service Bus sender and listener use separate connection strings, as required by the assignment
 
 ## Installation
 
@@ -136,6 +147,8 @@ Start each service in a separate terminal:
 .\.venv\Scripts\python.exe -m uvicorn feedback_service.main:app --reload --port 8003
 ```
 
+When `feedback_service` starts, it automatically launches a background queue consumer. The polling interval is controlled by `SERVICE_BUS_POLL_INTERVAL_SECONDS`.
+
 ## API Overview
 
 ### SessionService
@@ -147,6 +160,7 @@ Base URL: `http://127.0.0.1:8001`
 - `GET /api/sessions/byStatus/{status}`
 - `GET /api/sessions/byTutor/{tutor_id}`
 - `GET /api/sessions/byStudent/{student_id}`
+- `POST /api/sessions/{session_id}/feedback-request`
 - `GET /api/students`
 - `GET /api/students/{student_id}`
 
@@ -205,10 +219,33 @@ The project currently supports the assignment requirement for:
 
 - local applications
 - connection to a real Azure SQL Database
+- communication between two local apps through an Azure Service Bus queue
+- trigger-based queue publishing from `SessionService`
+- background queue polling in `FeedbackService`
 - separate schemas per service
 - tables and relationships based on the domain model
 - stub data
-- read-only API endpoints for the corresponding service data
+- read APIs for the corresponding service data
+- queue-driven feedback processing records
+
+## Demo Scenario
+
+Use the seeded completed session:
+
+- `55555555-5555-5555-5555-555555555555`
+
+Trigger message publishing:
+
+```powershell
+Invoke-RestMethod -Method Post http://127.0.0.1:8001/api/sessions/55555555-5555-5555-5555-555555555555/feedback-request
+```
+
+Then verify processing:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8003/api/feedback/events
+Invoke-RestMethod http://127.0.0.1:8003/api/feedback/processed
+```
 
 ## Notes
 
