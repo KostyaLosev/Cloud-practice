@@ -1,8 +1,17 @@
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException
+from datetime import datetime, timezone
+from uuid import uuid4
+
+from fastapi import FastAPI, HTTPException, status
 
 from shared.db import fetch_all, fetch_one, healthcheck, install_database_error_handler
+from shared.service_bus import (
+    ServiceBusConfigurationError,
+    ServiceBusOperationError,
+    get_send_connection_string,
+    publish_json_message,
+)
 
 app = FastAPI(title="SessionService", version="1.0.0")
 install_database_error_handler(app)
@@ -17,6 +26,13 @@ def get_health() -> dict[str, str]:
 
 @app.get("/api/sessions/{session_id}")
 def get_session_by_id(session_id: str) -> dict:
+    row = _get_session_row(session_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return row
+
+
+def _get_session_row(session_id: str) -> dict | None:
     query = """
     SELECT
         s.session_id,
@@ -31,10 +47,7 @@ def get_session_by_id(session_id: str) -> dict:
     FROM session_service.sessions AS s
     WHERE s.session_id = ?
     """
-    row = fetch_one(query, (session_id,))
-    if row is None:
-        raise HTTPException(status_code=404, detail="Session not found")
-    return row
+    return fetch_one(query, (session_id,))
 
 
 @app.get("/api/sessions/byStatus/{status}")
@@ -95,6 +108,49 @@ def get_sessions_by_student(student_id: str) -> list[dict]:
     ORDER BY s.scheduled_start
     """
     return fetch_all(query, (student_id,))
+
+
+@app.post("/api/sessions/{session_id}/feedback-request", status_code=status.HTTP_202_ACCEPTED)
+def publish_feedback_request(session_id: str) -> dict[str, str]:
+    session = _get_session_row(session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if session["status"] != "completed":
+        raise HTTPException(
+            status_code=400,
+            detail="Only completed sessions can be sent to the feedback queue",
+        )
+
+    event_id = str(uuid4())
+    payload = {
+        "event_id": event_id,
+        "event_type": "feedback.requested",
+        "queued_at": datetime.now(timezone.utc).isoformat(),
+        "session_id": session["session_id"],
+        "student_id": session["student_id"],
+        "tutor_id": session["tutor_id"],
+        "subject_id": session["subject_id"],
+        "scheduled_end": session["scheduled_end"],
+        "status": session["status"],
+        "notes": session["notes"],
+    }
+
+    try:
+        publish_json_message(
+            connection_string=get_send_connection_string(),
+            payload=payload,
+            message_id=event_id,
+            subject="feedback.requested",
+        )
+    except (ServiceBusConfigurationError, ServiceBusOperationError) as exc:
+        raise HTTPException(status_code=503, detail="Service Bus unavailable") from exc
+
+    return {
+        "status": "queued",
+        "event_id": event_id,
+        "session_id": session_id,
+    }
 
 
 @app.get("/api/students")

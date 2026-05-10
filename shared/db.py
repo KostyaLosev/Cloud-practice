@@ -143,6 +143,19 @@ def fetch_one(query: str, params: tuple[Any, ...] = ()) -> dict[str, Any] | None
     return rows[0]
 
 
+def execute_non_query(query: str, params: tuple[Any, ...] = ()) -> int:
+    try:
+        with get_connection() as connection:
+            cursor = connection.cursor()
+            cursor.execute(query, params)
+            rowcount = cursor.rowcount
+            connection.commit()
+    except (pyodbc.Error, DatabaseError) as exc:
+        raise DatabaseError("Database command failed") from exc
+
+    return rowcount
+
+
 def healthcheck() -> bool:
     try:
         with get_connection() as connection:
